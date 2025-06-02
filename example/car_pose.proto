@@ -1,0 +1,8 @@
+syntax = "proto3";
+package vehicle;
+
+message CarPose {          // keep the same name
+  double latitude  = 1;    // degrees, +N
+  double longitude = 2;    // degrees, +E
+  double heading   = 3;    // radians, 0 = north, +CW
+}

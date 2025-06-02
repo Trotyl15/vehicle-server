@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Lat/Lon Car Viewer</title>
+  <style>
+    html,body{margin:0;height:100%;background:#1e1e1e}
+    canvas{display:block;margin:auto;background:#202020}
+  </style>
+</head>
+<body>
+<canvas id="view" width="600" height="600"></canvas>
+
+<script src="https://unpkg.com/protobufjs@7/dist/protobuf.min.js"></script>
+<script>
+/* 1. Proto schema -------------------------------------------------------- */
+const protoSrc = `
+  syntax = "proto3";
+  package vehicle;
+  message CarPose {
+    double latitude  = 1;
+    double longitude = 2;
+    double heading   = 3;   // 0 = north, +CW
+  }`;
+const CarPose = protobuf.parse(protoSrc).root.lookupType("vehicle.CarPose");
+
+/* 2. Constants ----------------------------------------------------------- */
+const cvs  = document.getElementById("view");
+const ctx  = cvs.getContext("2d");
+const W = cvs.width, H = cvs.height;
+
+const LAT0 = 37.7955, LON0 = -122.3937;
+const R_EQ = 6_378_137;                         // [m]
+const LAT0_RAD = LAT0 * Math.PI/180;
+
+//  >>> bigger scale so the circle fills the canvas
+const SCALE  = 20.0;                            // 1 m → 20 px
+const ORIGIN = { x: W/2, y: H/2 };
+
+const CAR = { len: 36, wid: 16, dot: 4 };
+let pose = { x:0, y:0, heading:0 };
+
+/* 3. Helpers ------------------------------------------------------------- */
+function ll2enu(lat, lon){
+  const dLat = (lat - LAT0) * Math.PI/180;
+  const dLon = (lon - LON0) * Math.PI/180;
+  const n = R_EQ * dLat;
+  const e = R_EQ * dLon * Math.cos(LAT0_RAD);
+  return {e, n};
+}
+
+/* 4. Draw loop ----------------------------------------------------------- */
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // axes
+  ctx.strokeStyle="#444";
+  ctx.beginPath();
+  ctx.moveTo(0,ORIGIN.y); ctx.lineTo(W,ORIGIN.y);
+  ctx.moveTo(ORIGIN.x,0); ctx.lineTo(ORIGIN.x,H);
+  ctx.stroke();
+
+  // car
+  ctx.save();
+  ctx.translate(ORIGIN.x + pose.x*SCALE,
+                ORIGIN.y - pose.y*SCALE);
+
+  //  >>> rotate by (-heading + 90°)
+  ctx.rotate( pose.heading - Math.PI / 2 );
+
+  ctx.fillStyle="orange";
+  ctx.fillRect(-CAR.len/2,-CAR.wid/2,CAR.len,CAR.wid);
+
+  ctx.fillStyle="red";
+  ctx.beginPath();
+  ctx.arc(CAR.len/2,0,CAR.dot/2,0,2*Math.PI);
+  ctx.fill();
+  ctx.restore();
+
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+/* 5. WebSocket ----------------------------------------------------------- */
+const ws = new WebSocket("ws://localhost:8765");
+ws.binaryType = "arraybuffer";
+
+ws.onmessage = ev=>{
+  const msg = CarPose.decode(new Uint8Array(ev.data));
+  const {e,n}=ll2enu(msg.latitude,msg.longitude);
+  pose.x=e; pose.y=n; pose.heading=msg.heading;
+};
+</script>
+</body>
+</html>
