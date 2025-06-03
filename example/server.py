@@ -75,7 +75,7 @@ async def handler(ws):
 
 async def main():
     async with websockets.serve(handler, "0.0.0.0", PORT):
-        print(f"🚚  Variable-speed pose server at ws://localhost:{PORT}")
+        print(f"Variable-speed pose server at ws://localhost:{PORT}")
         await produce()
 
 
