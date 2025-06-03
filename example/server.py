@@ -1,65 +1,83 @@
-#!/usr/bin/env python3
-import asyncio, math, time
-import websockets, websockets.exceptions
-from car_pose_pb2 import CarPose     # using lat, lon, heading
+import asyncio, math, random, time, websockets
+from car_pose_pb2 import CarPose
 
-PORT, HZ = 8765, 20
-RADIUS_M = 10
-LAT0_DEG, LON0_DEG = 37.7955, -122.3937  # origin
-EARTH_R = 6_378_137.0
-LAT0_RAD = math.radians(LAT0_DEG)
+PORT      = 8765
+
+V_BASE    = 3.0           # mean forward speed  (m/s)
+A_V       = 1.5           # ± swing             (m/s)
+FREQ_HZ   = 0.05          # speed wiggle freq   (Hz)  → 20 s period
+NOISE_SD  = 0.4           # extra Gaussian jitter (m/s)
+
+A_M       = 8.0           # side-to-side amplitude (m)
+WAVELEN_M = 50.0          # crest-to-crest distance (m)
+
+LAT0      = 37.7955
+LON0      = -122.3937
+EARTH_R   = 6_378_137.0
+LAT0_RAD  = math.radians(LAT0)
 DEG_PER_RAD = 180 / math.pi
 
-# ── pre-12 API uses WebSocketServerProtocol ──
 clients: set[websockets.WebSocketServerProtocol] = set()
 
-def enu_to_ll(east, north):
+
+def enu_to_ll(east: float, north: float) -> tuple[float, float]:
     d_lat = north / EARTH_R
-    d_lon = east / (EARTH_R * math.cos(LAT0_RAD))
-    return (LAT0_DEG + d_lat * DEG_PER_RAD,
-            LON0_DEG + d_lon * DEG_PER_RAD)
+    d_lon = east  / (EARTH_R * math.cos(LAT0_RAD))
+    return (LAT0 + d_lat * DEG_PER_RAD,
+            LON0 + d_lon * DEG_PER_RAD)
+
 
 async def produce():
-    t0 = time.time()
+    k        = 2 * math.pi / WAVELEN_M
+    omega    = 2 * math.pi * FREQ_HZ
+    t_prev   = time.time()
+    north    = 0.0
+
     while True:
-        t = time.time() - t0
-        east  = RADIUS_M * math.sin(t)
-        north = RADIUS_M * math.cos(t)
+        t_now = time.time()
+        dt    = t_now - t_prev
+        t_prev = t_now
+
+        # variable forward speed (≥ 0 m/s)
+        v_n = max(0.0,
+                  V_BASE
+                + A_V * math.sin(omega * t_now)
+                + random.gauss(0.0, NOISE_SD))
+
+        north += v_n * dt
+        east   = A_M * math.sin(k * north)
+
+        # lateral velocity (for heading)
+        v_e = A_M * k * v_n * math.cos(k * north)
+        heading = math.atan2(v_e, v_n)          # 0 = North, +clockwise
+
         lat, lon = enu_to_ll(east, north)
 
-        dx =  RADIUS_M * math.cos(t)
-        dy = -RADIUS_M * math.sin(t)
-        heading = math.atan2(dx, dy)   # 0 = north, +CW
+        pkt  = CarPose(latitude=lat, longitude=lon, heading=heading)
+        data = pkt.SerializeToString()
 
-        msg = CarPose(latitude=lat, longitude=lon, heading=heading)
-        data = msg.SerializeToString()
-
-        # broadcast & prune closed sockets
-        gone = set()
-        for c in clients:
-            if not c.open:
-                gone.add(c)
-                continue
+        for ws in set(clients):
             try:
-                await c.send(data)
-            except websockets.exceptions.ConnectionClosed:
-                gone.add(c)
-        clients.difference_update(gone)
+                await ws.send(data)
+            except websockets.ConnectionClosed:
+                clients.discard(ws)
 
-        await asyncio.sleep(1 / HZ)
+        await asyncio.sleep(0.05)               # ~20 Hz
 
-# ── type hint back to protocol ──
-async def handler(ws: websockets.WebSocketServerProtocol):
+
+async def handler(ws):
     clients.add(ws)
     try:
         await ws.wait_closed()
     finally:
         clients.discard(ws)
 
+
 async def main():
     async with websockets.serve(handler, "0.0.0.0", PORT):
-        print(f"🌎 pose server on ws://localhost:{PORT}")
+        print(f"🚚  Variable-speed pose server at ws://localhost:{PORT}")
         await produce()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
